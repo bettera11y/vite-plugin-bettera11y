@@ -31,10 +31,11 @@
         "test:smoke:esm": "node --input-type=module -e \"import('./dist/index.js').then((m)=>{ if (!m.bettera11yPlugin) throw new Error('Missing bettera11yPlugin export'); })\"",
         "test:smoke:cjs": "node -e \"const m=require('./dist/index.cjs'); if (!m.bettera11yPlugin) throw new Error('Missing bettera11yPlugin export');\"",
         "validate:release": "npm run format:check && npm run typecheck && npm run test && npm run build",
+        "example:dev": "npm run build && npm install --prefix examples/vite-demo && npm run dev --prefix examples/vite-demo",
         "prepare": "husky"
     },
     "dependencies": {
-        "bettera11y": "^0.4.0",
+        "bettera11y": "^0.4.2",
         "minimatch": "^10.0.3"
     },
     "peerDependencies": {

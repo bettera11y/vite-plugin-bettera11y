@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { audit, type AuditFormat, type AuditResult } from "bettera11y";
 import { minimatch } from "minimatch";
+import type { TransformPluginContext } from "rollup";
 import type { Plugin, ResolvedConfig } from "vite";
 import type { BetterA11yNormalizedOptions, BetterA11yRunResult, BetterA11yViteOptions } from "./types";
 
@@ -22,11 +23,6 @@ const EXTENSION_TO_FORMAT: Record<string, AuditFormat> = {
     ".less": "css"
 };
 
-type PluginContextLike = {
-    warn: (message: string | { message: string }) => void;
-    error: (message: string | { message: string }) => never;
-};
-
 export function bettera11yPlugin(options: BetterA11yViteOptions = {}): Plugin {
     const normalizedOptions = normalizeOptions(options);
     const lastContentHashById = new Map<string, string>();
@@ -35,7 +31,11 @@ export function bettera11yPlugin(options: BetterA11yViteOptions = {}): Plugin {
 
     return {
         name: "vite-plugin-bettera11y",
-        enforce: "post",
+        /**
+         * Must run as `pre` before `@vitejs/plugin-react` (also `pre`) so we audit TSX/JSX source.
+         * With `post`, Vite hands us compiled output (e.g. `jsxDEV` / `createElement`) and BetterA11y cannot recover `<img>` etc.
+         */
+        enforce: "pre",
         configResolved(config) {
             resolvedConfig = config;
             isDevServer = config.command === "serve";
@@ -46,7 +46,9 @@ export function bettera11yPlugin(options: BetterA11yViteOptions = {}): Plugin {
             }
 
             const normalizedId = normalizeModuleId(id);
-            if (!shouldAuditId(normalizedId, normalizedOptions.include, normalizedOptions.exclude)) {
+            if (
+                !shouldAuditId(normalizedId, normalizedOptions.include, normalizedOptions.exclude, resolvedConfig?.root)
+            ) {
                 return null;
             }
 
@@ -62,13 +64,19 @@ export function bettera11yPlugin(options: BetterA11yViteOptions = {}): Plugin {
             }
 
             const runResult = await runAudit(code, normalizedId, format, normalizedOptions);
-            reportToTerminal(runResult, normalizedId, normalizedOptions.logLevel);
-            reportToOverlay(this, runResult.result.diagnostics, normalizedId, normalizedOptions);
+            emitAccessibilityDiagnostics(
+                this,
+                runResult.result.diagnostics,
+                normalizedId,
+                normalizedOptions,
+                resolvedConfig
+            );
 
             const hasErrors = runResult.summary.errors > 0;
             if (hasErrors && normalizedOptions.failOnError) {
                 this.error({
-                    message: `[bettera11y] Accessibility errors found in ${relativePath(normalizedId, resolvedConfig)}`
+                    message: `Accessibility errors in ${relativePath(normalizedId, resolvedConfig)} (BetterA11y)`,
+                    id: normalizedId
                 });
             }
 
@@ -107,75 +115,67 @@ function summarizeDiagnostics(result: AuditResult): BetterA11yRunResult["summary
     return { errors, warnings };
 }
 
-function reportToTerminal(
-    result: BetterA11yRunResult,
-    id: string,
-    logLevel: BetterA11yNormalizedOptions["logLevel"]
-): void {
-    const total = result.summary.errors + result.summary.warnings;
-    if (total === 0 && logLevel !== "info") {
-        return;
-    }
-
-    const prefix = "[bettera11y]";
-    const file = relativePath(id);
-    if (total === 0) {
-        // eslint-disable-next-line no-console
-        console.info(`${prefix} ${file}: no accessibility issues found`);
-        return;
-    }
-
-    for (const diagnostic of result.result.diagnostics) {
-        if (diagnostic.severity === "warn" && logLevel === "error") {
-            continue;
-        }
-        const location = formatLocation(diagnostic);
-        const ruleId = diagnostic.ruleId ?? "unknown-rule";
-        const line = `${prefix} ${file}${location} ${diagnostic.severity.toUpperCase()} ${ruleId} ${diagnostic.message}`;
-        if (diagnostic.severity === "error") {
-            // eslint-disable-next-line no-console
-            console.error(line);
-        } else {
-            // eslint-disable-next-line no-console
-            console.warn(line);
-        }
-    }
-}
-
-function reportToOverlay(
-    context: PluginContextLike,
+/**
+ * Emits BetterA11y diagnostics through Vite or Rollup so output matches the dev server style.
+ */
+function emitAccessibilityDiagnostics(
+    context: TransformPluginContext,
     diagnostics: AuditResult["diagnostics"],
-    id: string,
-    options: BetterA11yNormalizedOptions
+    moduleId: string,
+    options: BetterA11yNormalizedOptions,
+    resolvedConfig?: ResolvedConfig
 ): void {
-    if (!options.overlay) {
+    const logger = resolvedConfig?.logger;
+    const relativeFile = relativePath(moduleId, resolvedConfig);
+
+    if (diagnostics.length === 0 && options.logLevel === "info" && logger) {
+        logger.info(`No accessibility issues in ${relativeFile}`, { timestamp: true });
         return;
     }
 
     for (const diagnostic of diagnostics) {
-        const file = relativePath(id);
-        const message = `[bettera11y] ${file} ${diagnostic.message}`;
-        if (diagnostic.severity === "error") {
-            if (options.failOnError) {
-                continue;
-            }
-            context.warn({ message });
+        if (diagnostic.severity === "warn" && options.logLevel === "error") {
             continue;
         }
-        context.warn({ message });
+        if (diagnostic.severity === "error" && options.failOnError && options.overlay) {
+            continue;
+        }
+
+        const message = formatBetterA11yMessage(diagnostic);
+        const loc = diagnosticLocationToRollupLoc(diagnostic, moduleId);
+
+        if (options.overlay) {
+            context.warn({ message, id: moduleId, loc });
+        } else if (logger) {
+            const suffix = loc ? ` (${loc.line}:${loc.column})` : "";
+            const line = `${relativeFile}${suffix} ${message}`;
+            if (diagnostic.severity === "error") {
+                logger.error(line, { timestamp: true });
+            } else {
+                logger.warn(line, { timestamp: true });
+            }
+        }
     }
 }
 
-function formatLocation(diagnostic: AuditResult["diagnostics"][number]): string {
-    const line = diagnostic.location?.start?.line;
-    const column = diagnostic.location?.start?.column;
-    if (typeof line === "number" && typeof column === "number") {
-        return `:${line}:${column}`;
+function formatBetterA11yMessage(diagnostic: AuditResult["diagnostics"][number]): string {
+    const rule = diagnostic.ruleId ? ` [${diagnostic.ruleId}]` : "";
+    return `${diagnostic.message}${rule}`;
+}
+
+function diagnosticLocationToRollupLoc(
+    diagnostic: AuditResult["diagnostics"][number],
+    moduleId: string
+): { file?: string; line: number; column: number } | undefined {
+    const start = diagnostic.location?.start;
+    if (typeof start?.line !== "number" || typeof start?.column !== "number") {
+        return undefined;
     }
-    if (typeof line === "number") {
-        return `:${line}`;
-    }
-    return "";
+    return {
+        file: moduleId,
+        line: start.line,
+        column: Math.max(0, start.column - 1)
+    };
 }
 
 function normalizeOptions(options: BetterA11yViteOptions): BetterA11yNormalizedOptions {
@@ -212,7 +212,23 @@ export function normalizeModuleId(id: string): string {
     return id.replace(/\?.*$/, "");
 }
 
-export function shouldAuditId(id: string, include: string[], exclude: string[]): boolean {
+/**
+ * Returns the path used for include/exclude glob matching.
+ * Vite passes absolute module ids; user include or exclude globs are written relative to the Vite project root.
+ */
+export function idForGlobMatching(fileId: string, root?: string): string {
+    const toPosix = (value: string): string => value.split(path.sep).join("/");
+    if (!root) {
+        return toPosix(fileId);
+    }
+    const rel = path.relative(root, fileId);
+    if (rel.startsWith("..") || path.isAbsolute(rel)) {
+        return toPosix(fileId);
+    }
+    return toPosix(rel);
+}
+
+export function shouldAuditId(id: string, include: string[], exclude: string[], root?: string): boolean {
     if (!id || id.startsWith("\u0000")) {
         return false;
     }
@@ -220,11 +236,12 @@ export function shouldAuditId(id: string, include: string[], exclude: string[]):
         return false;
     }
 
-    const isIncluded = include.length === 0 || matchesAny(include, id);
+    const globId = idForGlobMatching(id, root);
+    const isIncluded = include.length === 0 || matchesAny(include, globId);
     if (!isIncluded) {
         return false;
     }
-    return exclude.length === 0 ? true : !matchesAny(exclude, id);
+    return exclude.length === 0 ? true : !matchesAny(exclude, globId);
 }
 
 export function inferFormatFromId(
@@ -243,3 +260,4 @@ function matchesAny(patterns: string[], id: string): boolean {
 }
 
 export type { BetterA11yViteOptions } from "./types";
+export { recommendedPreset, strictPreset, wcagAaBaselinePreset } from "bettera11y";

@@ -1,0 +1,8 @@
+/**
+ * Low-contrast text for BetterA11y `color-contrast` when this file is audited as CSS (`format: "css"`).
+ * Pair is intentionally below WCAG AA for normal-sized text (~4.5:1).
+ */
+.a11y-demo-bad-css-contrast {
+    color: #777777;
+    background-color: #888888;
+}

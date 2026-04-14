@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { recommendedPreset, strictPreset } from "bettera11y";
-import { bettera11yPlugin, inferFormatFromId, normalizeModuleId, shouldAuditId } from "../src";
+import { bettera11yPlugin, idForGlobMatching, inferFormatFromId, normalizeModuleId, shouldAuditId } from "../src";
 
 function getHookHandler<T>(hook: unknown): T {
     if (!hook) {
@@ -32,10 +32,18 @@ describe("module id helpers", () => {
     it("filters ids using include and exclude globs", () => {
         const include = ["**/*.tsx"];
         const exclude = ["**/*.stories.tsx"];
-        expect(shouldAuditId("/repo/src/App.tsx", include, exclude)).toBe(true);
-        expect(shouldAuditId("/repo/src/App.stories.tsx", include, exclude)).toBe(false);
-        expect(shouldAuditId("/repo/node_modules/pkg/index.tsx", include, [])).toBe(false);
-        expect(shouldAuditId("\u0000virtual", include, [])).toBe(false);
+        const root = "/repo";
+        expect(shouldAuditId("/repo/src/App.tsx", include, exclude, root)).toBe(true);
+        expect(shouldAuditId("/repo/src/App.stories.tsx", include, exclude, root)).toBe(false);
+        expect(shouldAuditId("/repo/node_modules/pkg/index.tsx", include, [], root)).toBe(false);
+        expect(shouldAuditId("\u0000virtual", include, [], root)).toBe(false);
+    });
+
+    it("matches include globs relative to Vite root when root is provided", () => {
+        const root = "/repo/project";
+        expect(idForGlobMatching(`${root}/src/App.tsx`, root)).toBe("src/App.tsx");
+        expect(shouldAuditId(`${root}/src/App.tsx`, ["src/**/*.tsx"], [], root)).toBe(true);
+        expect(shouldAuditId(`${root}/src/App.tsx`, ["src/**/*.tsx"], [], undefined)).toBe(false);
     });
 });
 
@@ -69,6 +77,39 @@ describe("vite plugin transform", () => {
 
         expect(warn).toHaveBeenCalled();
         expect(error).not.toHaveBeenCalled();
+    });
+
+    it("warns for TSX source with missing img alt", async () => {
+        const warn = vi.fn();
+        const error = vi.fn((message: unknown) => {
+            throw new Error(String(message));
+        });
+        const plugin = bettera11yPlugin({
+            include: ["**/*.tsx"],
+            overlay: true,
+            rules: recommendedPreset
+        });
+
+        const configResolved = getHookHandler<(config: unknown) => void>(plugin.configResolved);
+        configResolved({
+            command: "serve",
+            root: "/repo"
+        });
+
+        const tsx = `export default function App() {
+  return (
+    <main><img src="/x.png" /></main>
+  );
+}`;
+        const context = { warn, error };
+        const transform = getHookHandler<(this: unknown, code: string, id: string) => Promise<unknown>>(
+            plugin.transform
+        );
+        await transform.call(context as never, tsx, "/repo/src/App.tsx");
+
+        expect(warn).toHaveBeenCalled();
+        const first = warn.mock.calls[0][0] as { message?: string };
+        expect(first.message).toMatch(/image-alt|alt/i);
     });
 
     it("skips non-matching files", async () => {
@@ -121,6 +162,6 @@ describe("vite plugin transform", () => {
                 "<html><body><img src='/hero.png' /></body></html>",
                 "/repo/src/index.html"
             )
-        ).rejects.toThrow(/Accessibility errors found/);
+        ).rejects.toThrow(/Accessibility errors in .* \(BetterA11y\)/);
     });
 });
