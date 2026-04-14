@@ -1,0 +1,49 @@
+name: Release Please
+
+on:
+    push:
+        branches:
+            - main
+
+env:
+    FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+    contents: write
+    pull-requests: write
+    issues: write
+
+jobs:
+    release-please:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
+            - name: Setup Node
+              uses: actions/setup-node@v4
+              with:
+                  node-version: 22
+                  cache: npm
+
+            - name: Create or update release PR
+              env:
+                  GITHUB_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+              run: >
+                  npx release-please release-pr
+                  --repo-url="${{ github.repository }}"
+                  --target-branch=main
+                  --config-file=release-please-config.json
+                  --manifest-file=.release-please-manifest.json
+                  --token="${GITHUB_TOKEN}"
+
+            - name: Create GitHub release and tag when release PR is merged
+              env:
+                  GITHUB_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+              run: >
+                  npx release-please github-release
+                  --repo-url="${{ github.repository }}"
+                  --target-branch=main
+                  --config-file=release-please-config.json
+                  --manifest-file=.release-please-manifest.json
+                  --token="${GITHUB_TOKEN}"

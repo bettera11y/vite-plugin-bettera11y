@@ -1,0 +1,54 @@
+{
+    "name": "vite-plugin-bettera11y",
+    "version": "0.1.0",
+    "description": "Vite plugin for realtime BetterA11y diagnostics in local development.",
+    "license": "MIT",
+    "type": "module",
+    "main": "./dist/index.cjs",
+    "module": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/index.js",
+            "require": "./dist/index.cjs"
+        }
+    },
+    "files": [
+        "dist",
+        "README.md",
+        "CHANGELOG.md"
+    ],
+    "scripts": {
+        "build": "tsup",
+        "dev": "tsup --watch",
+        "typecheck": "tsc --noEmit",
+        "lint": "tsc --noEmit",
+        "commitlint": "commitlint --from=HEAD~1 --to=HEAD",
+        "format": "prettier --write .",
+        "format:check": "prettier --check .",
+        "test": "vitest run",
+        "test:smoke:esm": "node --input-type=module -e \"import('./dist/index.js').then((m)=>{ if (!m.bettera11yPlugin) throw new Error('Missing bettera11yPlugin export'); })\"",
+        "test:smoke:cjs": "node -e \"const m=require('./dist/index.cjs'); if (!m.bettera11yPlugin) throw new Error('Missing bettera11yPlugin export');\"",
+        "validate:release": "npm run format:check && npm run typecheck && npm run test && npm run build",
+        "prepare": "husky"
+    },
+    "dependencies": {
+        "bettera11y": "^0.4.0",
+        "minimatch": "^10.0.3"
+    },
+    "peerDependencies": {
+        "vite": "^6.0.0"
+    },
+    "devDependencies": {
+        "@commitlint/cli": "^19.8.0",
+        "@commitlint/config-conventional": "^19.8.0",
+        "@types/node": "^22.15.3",
+        "husky": "^9.1.7",
+        "prettier": "^3.5.3",
+        "tsup": "^8.4.0",
+        "typescript": "^5.8.3",
+        "vite": "^6.0.0",
+        "vitest": "^2.1.8"
+    }
+}
